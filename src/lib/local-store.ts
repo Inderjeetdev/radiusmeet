@@ -1,0 +1,560 @@
+/**
+ * Phone-only storage. Everything lives in localStorage on this device.
+ * Delete the app / clear site data → profile is gone. No backend.
+ */
+
+import { ECONOMY, type MessageKind } from "@/lib/economy";
+
+export type Gender = "woman" | "man" | "nonbinary";
+export type Seeking = "women" | "men" | "everyone";
+
+export type LocalProfile = {
+  userId: string;
+  displayName: string;
+  age: number;
+  gender: Gender;
+  seeking: Seeking;
+  bio: string;
+  /** Legacy single photo; prefer photos[] */
+  photoData: string | null;
+  /** At least 3 required at setup */
+  photos: string[];
+  email: string;
+  phone: string;
+  hobbies: string[];
+  smoke: "no" | "sometimes" | "yes" | "prefer_not";
+  drink: "no" | "sometimes" | "yes" | "prefer_not";
+  area: string;
+  lat: number | null;
+  lng: number | null;
+  searchRadiusKm: number;
+  /** Set for admin accounts */
+  isAdmin?: boolean;
+};
+
+export type LocalWallet = {
+  credits: number;
+  freeTexts: number;
+  hasPlan: boolean;
+  /** Lifetime earnings total (display) */
+  earnings: number;
+  /** Lifetime credits spent buying unlocks/gifts/video (not packs) */
+  creditsSpent: number;
+  /** Pack purchase total credits bought */
+  creditsPurchased: number;
+};
+
+export type EarningsEntry = { amount: number; at: number; reason: string };
+
+export type WithdrawRequest = {
+  id: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  phone: string;
+  amountCredits: number;
+  amountUsd: number;
+  status: "pending" | "paid" | "rejected";
+  createdAt: number;
+};
+
+export type SupportMessage = {
+  id: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  phone: string;
+  body: string;
+  fromAdmin: boolean;
+  createdAt: number;
+  readByAdmin: boolean;
+};
+
+export type LocalConversation = {
+  id: string;
+  peerId: string;
+  peerKind: "sample" | "user";
+  lastBody: string;
+  lastAt: string;
+};
+
+export type LocalMessage = {
+  id: number;
+  conversationId: string;
+  sender: "me" | "peer";
+  body: string;
+  createdAt: string;
+  kind: MessageKind;
+  /** Gift preset id or photo data-url */
+  payload?: string;
+  /** Incoming content locked until user pays to unlock */
+  locked: boolean;
+};
+
+type Account = {
+  userId: string;
+  email: string;
+  password: string;
+};
+
+type Store = {
+  sessionUserId: string | null;
+  accounts: Record<string, Account>;
+  profiles: Record<string, LocalProfile>;
+  wallets: Record<string, LocalWallet>;
+  /** Per-user earnings with timestamps (6‑month window) */
+  earningsLedger: Record<string, EarningsEntry[]>;
+  withdrawRequests: WithdrawRequest[];
+  supportMessages: SupportMessage[];
+  conversations: LocalConversation[];
+  messages: LocalMessage[];
+  messageSeq: number;
+};
+
+const KEY = "radiusmeet.local.v2";
+
+function emptyWallet(): LocalWallet {
+  return {
+    credits: 0,
+    freeTexts: ECONOMY.freeTextsOnSignup,
+    hasPlan: false,
+    earnings: 0,
+    creditsSpent: 0,
+    creditsPurchased: 0,
+  };
+}
+
+function emptyStore(): Store {
+  return {
+    sessionUserId: null,
+    accounts: {},
+    profiles: {},
+    wallets: {},
+    earningsLedger: {},
+    withdrawRequests: [],
+    supportMessages: [],
+    conversations: [],
+    messages: [],
+    messageSeq: 1,
+  };
+}
+
+function read(): Store {
+  if (typeof localStorage === "undefined") return emptyStore();
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return emptyStore();
+    const parsed = { ...emptyStore(), ...JSON.parse(raw) } as Store;
+    return parsed;
+  } catch {
+    return emptyStore();
+  }
+}
+
+function write(s: Store) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(KEY, JSON.stringify(s));
+}
+
+function uid() {
+  return crypto.randomUUID();
+}
+
+function ensureWallet(s: Store, userId: string): LocalWallet {
+  if (!s.wallets[userId]) s.wallets[userId] = emptyWallet();
+  const w = s.wallets[userId]!;
+  if (typeof w.hasPlan !== "boolean") w.hasPlan = false;
+  if (typeof w.earnings !== "number") w.earnings = 0;
+  if (typeof w.creditsSpent !== "number") w.creditsSpent = 0;
+  if (typeof w.creditsPurchased !== "number") w.creditsPurchased = 0;
+  return w;
+}
+
+export function getSessionUserId(): string | null {
+  return read().sessionUserId;
+}
+
+export function getSessionAccount(): Account | null {
+  const s = read();
+  if (!s.sessionUserId) return null;
+  return Object.values(s.accounts).find((a) => a.userId === s.sessionUserId) ?? null;
+}
+
+export function localSignUp(email: string, password: string): { ok: true } | { ok: false; error: string } {
+  const e = email.trim().toLowerCase();
+  if (!e || password.length < 4) return { ok: false, error: "Email and password (min 4 chars) required." };
+  const s = read();
+  if (s.accounts[e]) return { ok: false, error: "Account already exists on this phone. Sign in instead." };
+  const userId = uid();
+  s.accounts[e] = { userId, email: e, password };
+  s.wallets[userId] = emptyWallet();
+  s.sessionUserId = userId;
+  write(s);
+  return { ok: true };
+}
+
+export function localSignIn(email: string, password: string): { ok: true } | { ok: false; error: string } {
+  const e = email.trim().toLowerCase();
+  const s = read();
+  const acc = s.accounts[e];
+  if (!acc || acc.password !== password) return { ok: false, error: "Wrong email or password on this device." };
+  s.sessionUserId = acc.userId;
+  write(s);
+  return { ok: true };
+}
+
+export function localSignOut() {
+  const s = read();
+  s.sessionUserId = null;
+  write(s);
+}
+
+export function getProfile(userId?: string): LocalProfile | null {
+  const s = read();
+  const id = userId ?? s.sessionUserId;
+  if (!id) return null;
+  return s.profiles[id] ?? null;
+}
+
+export function saveLocalProfile(
+  data: Omit<LocalProfile, "userId"> & { userId?: string },
+): LocalProfile {
+  const s = read();
+  const userId = data.userId ?? s.sessionUserId;
+  if (!userId) throw new Error("Not signed in");
+  const photos = (data.photos ?? []).filter(Boolean);
+  const profile: LocalProfile = {
+    userId,
+    displayName: data.displayName,
+    age: data.age,
+    gender: data.gender,
+    seeking: data.seeking,
+    bio: data.bio,
+    photoData: photos[0] ?? data.photoData ?? null,
+    photos,
+    email: data.email,
+    phone: data.phone,
+    hobbies: data.hobbies ?? [],
+    smoke: data.smoke,
+    drink: data.drink,
+    area: data.area,
+    lat: data.lat,
+    lng: data.lng,
+    searchRadiusKm: data.searchRadiusKm,
+    isAdmin: data.isAdmin,
+  };
+  s.profiles[userId] = profile;
+  const w = ensureWallet(s, userId);
+  if (profile.isAdmin) {
+    w.hasPlan = true;
+    w.credits = Math.max(w.credits, 99999);
+    w.freeTexts = 9999;
+  }
+  s.wallets[userId] = w;
+  write(s);
+  return profile;
+}
+
+export function getWallet(userId?: string): LocalWallet {
+  const s = read();
+  const id = userId ?? s.sessionUserId;
+  if (!id) return emptyWallet();
+  return { ...emptyWallet(), ...ensureWallet(s, id) };
+}
+
+export function addCredits(packCredits: number) {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) throw new Error("Not signed in");
+  const w = ensureWallet(s, id);
+  w.credits += packCredits;
+  w.creditsPurchased = (w.creditsPurchased || 0) + packCredits;
+  if (packCredits > 0) w.hasPlan = true;
+  s.wallets[id] = w;
+  write(s);
+  return w;
+}
+
+export function spendCredits(
+  amount: number,
+): { ok: true; wallet: LocalWallet } | { ok: false; reason: "paywall"; wallet: LocalWallet } {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return { ok: false, reason: "paywall", wallet: emptyWallet() };
+  const w = ensureWallet(s, id);
+  const profile = s.profiles[id];
+  if (profile?.isAdmin) return { ok: true, wallet: { ...w } };
+  if (w.credits < amount) return { ok: false, reason: "paywall", wallet: { ...w } };
+  w.credits -= amount;
+  w.creditsSpent = (w.creditsSpent || 0) + amount;
+  s.wallets[id] = w;
+  write(s);
+  return { ok: true, wallet: { ...w } };
+}
+
+/** Send text: use free texts first, else 1 credit. Requires nothing for free texts. */
+export function spendForSendText():
+  | { ok: true }
+  | { ok: false; reason: "paywall" } {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return { ok: false, reason: "paywall" };
+  const w = ensureWallet(s, id);
+  if (s.profiles[id]?.isAdmin) return { ok: true };
+  if (w.freeTexts > 0) {
+    w.freeTexts -= 1;
+    s.wallets[id] = w;
+    write(s);
+    return { ok: true };
+  }
+  if (w.credits >= ECONOMY.sendMessageCredits) {
+    w.credits -= ECONOMY.sendMessageCredits;
+    s.wallets[id] = w;
+    write(s);
+    return { ok: true };
+  }
+  return { ok: false, reason: "paywall" };
+}
+
+export function addEarnings(amount: number, reason = "activity") {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id || amount <= 0) return;
+  const w = ensureWallet(s, id);
+  w.earnings += amount;
+  if (!s.earningsLedger[id]) s.earningsLedger[id] = [];
+  s.earningsLedger[id]!.push({ amount, at: Date.now(), reason });
+  s.wallets[id] = w;
+  write(s);
+}
+
+/** Earnings within the last ~6 months (for withdraw eligibility). */
+export function getEligibleEarnings(userId?: string): number {
+  const s = read();
+  const id = userId ?? s.sessionUserId;
+  if (!id) return 0;
+  const cutoff = Date.now() - ECONOMY.withdrawWindowMs;
+  const ledger = s.earningsLedger[id] ?? [];
+  return ledger.filter((e) => e.at >= cutoff).reduce((sum, e) => sum + e.amount, 0);
+}
+
+export function createWithdrawRequest():
+  | { ok: true; request: WithdrawRequest }
+  | { ok: false; message: string } {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return { ok: false, message: "Not signed in" };
+  const profile = s.profiles[id];
+  if (!profile || profile.gender !== "woman") {
+    return { ok: false, message: "Withdrawals are for woman accounts." };
+  }
+  const eligible = getEligibleEarnings(id);
+  if (eligible < ECONOMY.withdrawCreditsRequired) {
+    return {
+      ok: false,
+      message: `Need ${ECONOMY.withdrawCreditsRequired} credits earned in the last 6 months (you have ${eligible}).`,
+    };
+  }
+  const pending = s.withdrawRequests.find((r) => r.userId === id && r.status === "pending");
+  if (pending) return { ok: false, message: "You already have a pending withdraw request." };
+
+  const req: WithdrawRequest = {
+    id: uid(),
+    userId: id,
+    displayName: profile.displayName,
+    email: profile.email,
+    phone: profile.phone,
+    amountCredits: ECONOMY.withdrawCreditsRequired,
+    amountUsd: ECONOMY.withdrawUsd,
+    status: "pending",
+    createdAt: Date.now(),
+  };
+  s.withdrawRequests.unshift(req);
+  // Deduct from eligible by recording negative? Keep simple: mark paid only by admin.
+  write(s);
+  return { ok: true, request: req };
+}
+
+export function listWithdrawRequests(): WithdrawRequest[] {
+  return [...read().withdrawRequests].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function setWithdrawStatus(requestId: string, status: "paid" | "rejected" | "pending") {
+  const s = read();
+  const r = s.withdrawRequests.find((x) => x.id === requestId);
+  if (!r) return;
+  r.status = status;
+  write(s);
+}
+
+export function sendSupportMessage(body: string): SupportMessage {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) throw new Error("Not signed in");
+  const profile = s.profiles[id];
+  const msg: SupportMessage = {
+    id: uid(),
+    userId: id,
+    displayName: profile?.displayName ?? "User",
+    email: profile?.email ?? "",
+    phone: profile?.phone ?? "",
+    body: body.trim(),
+    fromAdmin: Boolean(profile?.isAdmin),
+    createdAt: Date.now(),
+    readByAdmin: Boolean(profile?.isAdmin),
+  };
+  s.supportMessages.push(msg);
+  write(s);
+  return msg;
+}
+
+export function listSupportMessages(): SupportMessage[] {
+  return [...read().supportMessages].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function markSupportReadByAdmin() {
+  const s = read();
+  for (const m of s.supportMessages) {
+    if (!m.fromAdmin) m.readByAdmin = true;
+  }
+  write(s);
+}
+
+/** All non-admin profiles with wallet stats (admin dashboard). */
+export function listUserStats() {
+  const s = read();
+  const rows = Object.values(s.profiles)
+    .filter((p) => !p.isAdmin)
+    .map((p) => {
+      const w = ensureWallet(s, p.userId);
+      const eligible = getEligibleEarnings(p.userId);
+      return {
+        userId: p.userId,
+        displayName: p.displayName,
+        email: p.email,
+        phone: p.phone,
+        gender: p.gender,
+        area: p.area,
+        credits: w.credits,
+        creditsSpent: w.creditsSpent || 0,
+        creditsPurchased: w.creditsPurchased || 0,
+        earnings: w.earnings || 0,
+        eligibleEarnings: eligible,
+        hasPlan: w.hasPlan,
+      };
+    });
+  return rows;
+}
+
+
+export function listConversations(): LocalConversation[] {
+  const s = read();
+  if (!s.sessionUserId) return [];
+  return [...s.conversations].sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
+}
+
+export function openLocalChat(peerId: string, peerKind: "sample" | "user"): string {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) throw new Error("Not signed in");
+  const existing = s.conversations.find((c) => c.peerId === peerId && c.peerKind === peerKind);
+  if (existing) return existing.id;
+  const convId = uid();
+  s.conversations.push({
+    id: convId,
+    peerId,
+    peerKind,
+    lastBody: "",
+    lastAt: new Date().toISOString(),
+  });
+  write(s);
+  return convId;
+}
+
+export function getMessages(conversationId: string): LocalMessage[] {
+  const s = read();
+  return s.messages
+    .filter((m) => m.conversationId === conversationId)
+    .map((m) => ({
+      kind: m.kind ?? "text",
+      locked: typeof m.locked === "boolean" ? m.locked : m.sender === "peer",
+      ...m,
+    }))
+    .sort((a, b) => a.id - b.id);
+}
+
+export function getConversation(conversationId: string): LocalConversation | null {
+  return read().conversations.find((c) => c.id === conversationId) ?? null;
+}
+
+export function appendMessage(
+  conversationId: string,
+  msg: Omit<LocalMessage, "id" | "conversationId" | "createdAt"> & { createdAt?: string },
+) {
+  const s = read();
+  const conv = s.conversations.find((c) => c.id === conversationId);
+  if (!conv) throw new Error("Chat not found");
+  const now = msg.createdAt ?? new Date().toISOString();
+  const full: LocalMessage = {
+    id: s.messageSeq++,
+    conversationId,
+    sender: msg.sender,
+    body: msg.body,
+    kind: msg.kind ?? "text",
+    payload: msg.payload,
+    locked: msg.locked ?? false,
+    createdAt: now,
+  };
+  s.messages.push(full);
+  conv.lastBody =
+    full.kind === "gift" ? "🎁 Gift" : full.kind === "photo" ? "📷 Photo" : full.body;
+  conv.lastAt = now;
+  write(s);
+  return full;
+}
+
+export function unlockMessage(messageId: number):
+  | { ok: true }
+  | { ok: false; reason: "paywall" | "need_plan" | "not_found" } {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return { ok: false, reason: "paywall" };
+  const w = ensureWallet(s, id);
+  if (s.profiles[id]?.isAdmin) {
+    const msg = s.messages.find((m) => m.id === messageId);
+    if (msg) msg.locked = false;
+    write(s);
+    return { ok: true };
+  }
+  if (!w.hasPlan) return { ok: false, reason: "need_plan" };
+  const msg = s.messages.find((m) => m.id === messageId);
+  if (!msg) return { ok: false, reason: "not_found" };
+  if (!msg.locked) return { ok: true };
+  const cost =
+    msg.kind === "gift"
+      ? ECONOMY.unlockGiftCredits
+      : msg.kind === "photo"
+        ? ECONOMY.unlockPhotoCredits
+        : ECONOMY.unlockMessageCredits;
+  if (w.credits < cost) return { ok: false, reason: "paywall" };
+  w.credits -= cost;
+  msg.locked = false;
+  s.wallets[id] = w;
+  write(s);
+  return { ok: true };
+}
+
+export function clearAllLocalData() {
+  if (typeof localStorage !== "undefined") localStorage.removeItem(KEY);
+}
+
+
+export function isCurrentUserAdmin(): boolean {
+  const p = getProfile();
+  return Boolean(p?.isAdmin);
+}
+
+/** Admin and chats with admin: never charge. */
+export function shouldSkipCharges(): boolean {
+  return isCurrentUserAdmin();
+}
