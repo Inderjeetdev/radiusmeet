@@ -4,7 +4,7 @@ import { useState } from "react";
 import { AppGate } from "@/components/app-gate";
 import { HOBBY_OPTIONS, type SmokeDrink } from "@/lib/economy";
 import { saveProfile } from "@/lib/local-api";
-import { getSessionAccount } from "@/lib/local-store";
+import { getSessionAccount, localSignOut } from "@/lib/local-store";
 
 export const Route = createFileRoute("/setup")({
   component: () => (
@@ -102,10 +102,45 @@ function Setup() {
     }
     setLocStatus("Getting location…");
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLat(pos.coords.latitude);
-        setLng(pos.coords.longitude);
-        setLocStatus("Location saved.");
+      async (pos) => {
+        const latitude = pos.coords.latitude;
+        const longitude = pos.coords.longitude;
+        setLat(latitude);
+        setLng(longitude);
+        setLocStatus("Looking up area name…");
+        try {
+          // Free OpenStreetMap Nominatim reverse geocode (no API key)
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&zoom=12`,
+            { headers: { Accept: "application/json" } },
+          );
+          if (res.ok) {
+            const data = await res.json();
+            const a = data.address || {};
+            const place =
+              a.suburb ||
+              a.neighbourhood ||
+              a.city_district ||
+              a.town ||
+              a.city ||
+              a.village ||
+              a.county ||
+              a.state ||
+              "";
+            const region = a.city || a.town || a.state || "";
+            const label = [place, region].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i).join(", ");
+            if (label) {
+              setArea(label);
+              setLocStatus("Location detected and filled.");
+            } else {
+              setLocStatus("Location saved. Please type your area name.");
+            }
+          } else {
+            setLocStatus("Location saved. Please type your area name.");
+          }
+        } catch {
+          setLocStatus("Location saved. Please type your area name.");
+        }
       },
       () => {
         setLocStatus("Could not get location. You can still type your area.");
@@ -125,8 +160,28 @@ function Setup() {
 
   return (
     <main className="mx-auto min-h-dvh max-w-lg bg-bg px-5 py-8">
-      <p className="text-sm tracking-widest text-gold uppercase">Free setup</p>
+      <div className="mb-4 rounded-2xl border border-border bg-surface px-3 py-2 text-xs text-muted">
+        Finish setup to use the app, or <strong className="text-fg">Sign out</strong> (top right) to return to login.
+        Admin access needs a completed profile with an admin email.
+      </div>
+      <div className="flex items-center justify-between">
+        <p className="text-sm tracking-widest text-gold uppercase">Free setup</p>
+        <button
+          type="button"
+          className="rounded-full border border-border px-3 py-1.5 text-sm text-fg"
+          onClick={() => {
+            localSignOut();
+            qc.clear();
+            window.location.href = "/login";
+          }}
+        >
+          Sign out
+        </button>
+      </div>
       <h1 className="font-display mt-2 text-4xl">Who are you?</h1>
+      <p className="mt-2 text-xs text-muted">
+        Woman accounts receive 250 welcome credits after setup to chat and stay active.
+      </p>
       <p className="mt-2 text-muted">
         At least 3 photos, email, phone, and your area. Woman accounts can earn credits from chats and video.
       </p>
@@ -150,17 +205,26 @@ function Setup() {
           save.mutate();
         }}
       >
-        <label className="block">
-          <span className="mb-1 block text-sm text-muted">Photos (min 3)</span>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void onPhoto(f);
-              e.target.value = "";
-            }}
-          />
+        <div className="block">
+          <span className="mb-2 block text-sm text-muted">Photos (min 3, max 6)</span>
+          <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border bg-surface px-4 py-6 text-center transition hover:border-gold hover:bg-gold/5">
+            <span className="text-2xl">📷</span>
+            <span className="text-sm font-medium text-fg">
+              {photos.length >= 6 ? "Maximum 6 photos reached" : "Tap to upload a photo"}
+            </span>
+            <span className="text-xs text-muted">JPG or PNG · square crop applied</span>
+            <input
+              type="file"
+              accept="image/*"
+              className="sr-only"
+              disabled={photos.length >= 6}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void onPhoto(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
           <div className="mt-3 flex flex-wrap gap-2">
             {photos.map((src, i) => (
               <div key={i} className="relative">
@@ -176,7 +240,7 @@ function Setup() {
             ))}
           </div>
           <p className="mt-1 text-xs text-muted">{photos.length}/3 minimum</p>
-        </label>
+        </div>
 
         <label className="block">
           <span className="mb-1 block text-sm text-muted">Name</span>

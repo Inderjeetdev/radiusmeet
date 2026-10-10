@@ -20,8 +20,8 @@ function Inbox() {
       <h1 className="font-display text-3xl">Chats</h1>
       <p className="mt-1 text-sm text-muted">
         {wallet?.has_plan
-          ? `${wallet.credits} credits · ${wallet.free_texts} free texts left`
-          : "Without a plan you only see that someone messaged you — not the text. Buy Starter to unlock."}
+          ? `${wallet.credits} credits`
+          : "Free tier: limited chats & messages. Buy Starter for full access."}
       </p>
       <ul className="mt-6 space-y-2">
         {rows.length === 0 ? (
@@ -34,18 +34,32 @@ function Inbox() {
               params={{ id: c.id }}
               className="block rounded-2xl border border-border bg-surface px-4 py-3"
             >
-              <p className="text-sm text-gold">
-                {c.peer_kind === "sample" ? "Nearby" : "Member"}
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-medium text-fg">
+                  {c.peer_name}
+                  {c.peer_age != null ? `, ${c.peer_age}` : ""}
+                </p>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                    c.peer_online
+                      ? "bg-emerald-500/20 text-emerald-400"
+                      : "bg-muted/30 text-muted"
+                  }`}
+                >
+                  {c.peer_online ? "Online" : "Offline"}
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-sm text-muted">
+                {c.last_body || "Say hello"}
                 {c.locked_preview ? " · locked" : ""}
               </p>
-              <p className="truncate text-fg">{c.last_body || "Say hello"}</p>
             </Link>
           </li>
         ))}
       </ul>
       {!wallet?.has_plan ? (
         <Link to="/wallet" className="mt-6 inline-block text-sm text-gold underline">
-          Buy Starter to read messages →
+          Buy Starter to unlock everything →
         </Link>
       ) : null}
     </div>

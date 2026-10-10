@@ -1,6 +1,10 @@
 RadiusMeet — Project reference
 ================================
 
+How to run: npm run dev
+Then go to: http://localhost:8080/discover
+admin is one with email: misterinderjeet@gmail.com
+
 App name: RadiusMeet
 Theme: Find people near your area (km radius / same city), chat, gifts, video; freemium credits via Google Play Billing path.
 

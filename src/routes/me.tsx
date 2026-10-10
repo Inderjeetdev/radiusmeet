@@ -110,11 +110,14 @@ function Me() {
             {p.gender === "woman" && !p.is_admin ? (
               <div className="mt-4 rounded-2xl border border-border bg-bg p-3">
                 <p className="text-sm text-gold">
-                  Eligible (last 6 months): {w?.eligible_earnings ?? 0} / {ECONOMY.withdrawCreditsRequired}
+                  Reward points (last 6 months): {w?.eligible_earnings ?? 0} /{" "}
+                  {ECONOMY.withdrawCreditsRequired}
                 </p>
-                <p className="text-xs text-muted">Lifetime earned: {w?.earnings ?? 0}</p>
+                <p className="text-xs text-muted">Lifetime points: {w?.earnings ?? 0}</p>
                 <p className="text-xs text-muted">
-                  At {ECONOMY.withdrawCreditsRequired} eligible credits ≈ ${ECONOMY.withdrawUsd}. Admin is notified to release payment.
+                  Reach {ECONOMY.withdrawCreditsRequired} points to notify admin. Admin may release ~$
+                  {ECONOMY.withdrawUsd} cash or {ECONOMY.withdrawCreditReward} credits — not automatic.
+                  Buyer payments stay with the platform.
                 </p>
                 <button
                   type="button"
@@ -122,7 +125,7 @@ function Me() {
                   disabled={withdraw.isPending}
                   onClick={() => withdraw.mutate()}
                 >
-                  Request withdraw
+                  Request reward from admin
                 </button>
               </div>
             ) : null}

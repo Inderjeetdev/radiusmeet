@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AppGate } from "@/components/app-gate";
 import { isNativePlayBillingAvailable } from "@/lib/billing";
 import { PACKS, VIDEO_COST, getMe, purchaseCredits } from "@/lib/local-api";
+import { ECONOMY } from "@/lib/economy";
 
 export const Route = createFileRoute("/wallet")({
   component: () => (
@@ -43,6 +44,11 @@ function Wallet() {
   return (
     <div className="px-5">
       <h1 className="font-display text-3xl">Wallet</h1>
+      <p className="mt-2 rounded-2xl border border-border bg-surface px-3 py-2 text-xs text-muted">
+        <strong className="text-fg">Video terms:</strong> Placing a video call costs{" "}
+        {ECONOMY.videoCallStartCredits} credits (connect fee). Per-minute rates apply only when both
+        people are connected on a live video link. Unanswered calls still use the connect fee.
+      </p>
       <p className="mt-1 text-muted">
         Setup is free. A few free texts, then credits. Buy Starter to unlock reading messages, gifts, photos, and video.
       </p>

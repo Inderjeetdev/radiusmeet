@@ -5,6 +5,10 @@
  */
 import {
   addCredits,
+  adminGrantCreditsToEmail,
+  getPayoutPaypal,
+  setPayoutPaypal,
+  adminReplyToUser,
   addEarnings,
   appendMessage,
   createWithdrawRequest,
@@ -12,10 +16,13 @@ import {
   getEligibleEarnings,
   getMessages,
   getProfile,
+  listOtherLocalProfiles,
   getSessionUserId,
   getWallet,
   listConversations,
   listSupportMessages,
+  listSupportThreads,
+  setSupportTicketStatus,
   listUserStats,
   listWithdrawRequests,
   localSignIn,
@@ -26,8 +33,12 @@ import {
   saveLocalProfile,
   sendSupportMessage,
   setWithdrawStatus,
+  adminFulfillWithdraw,
   spendCredits,
   spendForSendText,
+  freeSendsLeft,
+  nextPeerReplyShouldBeFree,
+  canOpenNewChat,
   unlockMessage,
   type Gender,
   type Seeking,
@@ -171,15 +182,61 @@ const REPLIES = [
   "I'm around this area too. How's your day?",
   "Nice to meet you. What brought you to RadiusMeet?",
   "Hello! Always up for a local chat.",
+  "Hi! Saw you're in the same area — small world.",
+  "Hey there. Hope your day's going well.",
+  "Thanks for saying hi. What do you usually do around here?",
+  "Hi! Always nice to meet someone local.",
+  "Hey — free this evening or just browsing?",
+  "Hello! Coffee spots near you any good?",
+  "Hi there. What made you open the app today?",
+  "Hey! I'm usually around this side of town.",
+  "Nice to connect. Any favorite places nearby?",
+  "Hi — weekend plans or keeping it quiet?",
+  "Hey! Work nearby or just visiting?",
+  "Hello. Music or movies more your thing?",
+  "Hi! The weather's been decent here lately.",
+  "Hey — glad you reached out.",
+  "Hi there. Early bird or night owl?",
+  "Hello! Looking for friends or something more casual?",
+  "Hey. Food recommendations in this area?",
+  "Hi! Do you walk a lot around here?",
+  "Hello — new to the neighborhood or long-time local?",
+  "Hey! Pets or plants — which one wins?",
+  "Hi. Quiet cafes or busy streets for you?",
+  "Hello! Hope I'm not interrupting anything.",
+  "Hey there. Weekdays busy or flexible?",
+  "Hi! Always open to a good conversation.",
+  "Hello. Sports fan or more of a reader?",
+  "Hey — what time do you usually get free?",
+  "Hi! Rain or sunshine preferred?",
+  "Hello. Trying new places or sticking to favorites?",
+  "Hey there. Morning walks or evening ones?",
+  "Hi — any hobby you're into lately?",
+  "Hello! Good to see someone friendly nearby.",
+  "Hey. Short chats or long ones preferred?",
+  "Hi there. Hope your week's been kind.",
+  "Hello — curious what you're looking for here.",
+  "Hey! Nice profile, by the way.",
+  "Hi. Free to chat a bit more?",
 ];
+
+/** Stable online/offline for dummy profiles (same on Discover + Chat). */
+export function isSampleOnline(peerId: string): boolean {
+  const seed = peerId.split("").reduce((a, ch) => a + ch.charCodeAt(0), 0);
+  return seed % 100 < 35;
+}
 
 function normalizeArea(area: string) {
   return area.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 export async function getMe() {
-  const profile = getProfile();
+  let profile = getProfile();
   const wallet = getWallet();
+  // Re-apply admin flag from current ADMIN_EMAILS (so new admin emails work without re-setup)
+  if (profile && (isAdminEmail(profile.email) || isAdminPhone(profile.phone)) && !profile.isAdmin) {
+    profile = saveLocalProfile({ ...profile, isAdmin: true });
+  }
   if (!profile) {
     return {
       profile: null,
@@ -213,7 +270,7 @@ export async function getMe() {
       lat: profile.lat,
       lng: profile.lng,
       search_radius_km: profile.searchRadiusKm,
-      is_admin: Boolean(profile.isAdmin),
+      is_admin: Boolean(profile.isAdmin) || isAdminEmail(profile.email) || isAdminPhone(profile.phone),
     },
     wallet: {
       credits: wallet.credits,
@@ -349,25 +406,56 @@ export async function listDiscover() {
         seeking: me.seeking,
         limitCount: 80,
       });
-      live = rows.map((p) => ({
-        id: p.userId,
-        kind: "user" as const,
-        online: true as const,
-        name: p.displayName,
-        age: p.age,
-        gender: p.gender,
-        bio: p.bio,
-        hue: 0,
-        tagline: "On RadiusMeet",
-        photo: p.photoData,
-        area: p.area || myArea,
-        distanceLabel: p.area || "Same area",
-        distanceKm: null as number | null,
-      }));
+      const myIds = new Set(
+        [me.userId, fbUser?.uid].filter(Boolean) as string[],
+      );
+      live = rows
+        .filter((p) => p.userId && !myIds.has(p.userId))
+        .filter((p) => (p.email || "").toLowerCase() !== (me.email || "").toLowerCase())
+        .map((p) => ({
+          id: p.userId,
+          kind: "user" as const,
+          online: true as const,
+          name: p.displayName,
+          age: p.age,
+          gender: p.gender,
+          bio: p.bio,
+          hue: 0,
+          tagline: "On RadiusMeet",
+          photo: p.photoData,
+          area: p.area || myArea,
+          distanceLabel: p.area || "Same area",
+          distanceKm: null as number | null,
+        }));
     } catch (err) {
       console.warn("Firebase discover failed:", err);
     }
   }
+
+  // --- Other accounts on this device (sign up test user, then admin, both appear) ---
+  const localOthers = listOtherLocalProfiles()
+    .filter((p) => genderMatches(p.gender))
+    .filter((p) => {
+      if (!myArea) return true;
+      const a = normalizeArea(p.area || "");
+      const b = normalizeArea(myArea);
+      return !a || !b || a === b || a.includes(b) || b.includes(a);
+    })
+    .map((p) => ({
+      id: p.userId,
+      kind: "user" as const,
+      online: true as const,
+      name: p.displayName,
+      age: p.age,
+      gender: p.gender,
+      bio: p.bio,
+      hue: 200,
+      tagline: p.isAdmin ? "Admin" : "On this device",
+      photo: p.photoData ?? p.photos?.[0] ?? null,
+      area: p.area || myArea || "Nearby",
+      distanceLabel: "Same device",
+      distanceKm: null as number | null,
+    }));
 
   // --- Offline dummies (~20) so the feed is never empty ---
   const seed = normalizeArea(myArea)
@@ -381,14 +469,16 @@ export async function listDiscover() {
   });
 
   const offlineCount = Math.min(20, shuffled.length);
-  const offline = shuffled.slice(0, offlineCount).map((s, idx) => {
+  const samples = shuffled.slice(0, offlineCount).map((s, idx) => {
     const fakeKm =
       radiusKm <= 20 ? 1 + (idx % 12) : radiusKm <= 50 ? 2 + ((idx * 3) % 40) : 5 + ((idx * 5) % 80);
     const capped = Math.min(fakeKm, Math.max(1, radiusKm - 1));
+    // Same rule as getSampleReplyTiming / isSampleOnline (stable per peer id)
+    const appearsOnline = isSampleOnline(s.id);
     return {
       id: s.id,
       kind: "sample" as const,
-      online: false as const,
+      online: appearsOnline,
       name: s.display_name,
       age: s.age,
       gender: s.gender,
@@ -402,38 +492,73 @@ export async function listDiscover() {
     };
   });
 
-  const people = [...live, ...offline];
+  // Online samples first, then offline, then real live users already at front
+  const onlineSamples = samples.filter((p) => p.online);
+  const offlineSamples = samples.filter((p) => !p.online);
+  // Live Firebase + same-device accounts first, then online dummies, then offline dummies
+  const people = [...live, ...localOthers, ...onlineSamples, ...offlineSamples];
 
   return {
     people,
     area: myArea,
     radiusKm,
-    onlineCount: live.length,
-    offlineCount: offline.length,
+    onlineCount: live.length + localOthers.length + onlineSamples.length,
+    offlineCount: offlineSamples.length,
   };
 }
 
 export async function openChat(args: { data: { peerId: string; peerKind: "sample" | "user" } }) {
-  const conversationId = openLocalChat(args.data.peerId, args.data.peerKind);
-  return { conversationId };
+  try {
+    const conversationId = openLocalChat(args.data.peerId, args.data.peerKind);
+    return { ok: true as const, conversationId };
+  } catch (e) {
+    if (e instanceof Error && e.message === "CHAT_LIMIT") {
+      return { ok: false as const, reason: "chat_limit" as const };
+    }
+    throw e;
+  }
 }
 
 export async function listInbox() {
   const wallet = getWallet();
+  const profile = getProfile();
   return {
-    conversations: listConversations().map((c) => ({
-      id: c.id,
-      peer_id: c.peerId,
-      peer_kind: c.peerKind,
-      // Teaser only if user has no plan — classic coin-app pattern
-      last_body: wallet.hasPlan
-        ? c.lastBody
-        : c.lastBody
-          ? "New message — unlock to read"
-          : "",
-      last_at: c.lastAt,
-      locked_preview: !wallet.hasPlan && Boolean(c.lastBody),
-    })),
+    conversations: listConversations().map((c) => {
+      let peerName = "Chat";
+      let peerAge: number | null = null;
+      let peerOnline = false;
+      if (c.peerKind === "sample") {
+        const s = DUMMY_PROFILES.find((d) => d.id === c.peerId);
+        if (s) {
+          peerName = s.display_name;
+          peerAge = s.age;
+          peerOnline = isSampleOnline(c.peerId);
+        } else {
+          peerName = "Nearby";
+        }
+      } else {
+        const p = getProfile(c.peerId);
+        peerName = p?.displayName ?? "Member";
+        peerAge = p?.age ?? null;
+        peerOnline = true;
+      }
+      return {
+        id: c.id,
+        peer_id: c.peerId,
+        peer_kind: c.peerKind,
+        peer_name: peerName,
+        peer_age: peerAge,
+        peer_online: peerOnline,
+        // Teaser only if user has no plan — classic coin-app pattern
+        last_body: wallet.hasPlan
+          ? c.lastBody
+          : c.lastBody
+            ? "New message — unlock to read"
+            : "",
+        last_at: c.lastAt,
+        locked_preview: !wallet.hasPlan && Boolean(c.lastBody),
+      };
+    }),
     wallet: {
       credits: wallet.credits,
       free_texts: wallet.freeTexts,
@@ -441,13 +566,17 @@ export async function listInbox() {
       earnings: wallet.earnings,
       credits_spent: wallet.creditsSpent ?? 0,
       credits_purchased: wallet.creditsPurchased ?? 0,
-      eligible_earnings: getEligibleEarnings(profile.userId),
+      eligible_earnings: profile ? getEligibleEarnings(profile.userId) : 0,
     },
   };
 }
 
 export async function getChat(args: { data: { conversationId: string } }) {
-  const conv = getConversation(args.data.conversationId);
+  const rawId = args.data.conversationId;
+  const conv =
+    getConversation(rawId) ||
+    getConversation(decodeURIComponent(rawId)) ||
+    null;
   if (!conv) return null;
 
   let peer: {
@@ -458,22 +587,49 @@ export async function getChat(args: { data: { conversationId: string } }) {
     hue: number;
     photo: string | null;
     sample: boolean;
+    online?: boolean;
   };
 
   if (conv.peerKind === "sample") {
     const s = DUMMY_PROFILES.find((d) => d.id === conv.peerId);
-    if (!s) return null;
-    peer = {
-      name: s.display_name,
-      age: s.age,
-      gender: s.gender,
-      bio: s.bio,
-      hue: s.hue,
-      photo: null,
-      sample: true,
-    };
+    if (!s) {
+      // Unknown dummy id — still open a usable chat shell
+      peer = {
+        name: "Nearby",
+        age: 0,
+        gender: "",
+        bio: "",
+        hue: 200,
+        photo: null,
+        sample: true,
+        online: false,
+      };
+    } else {
+      const timing = getSampleReplyTiming(conv.peerId);
+      peer = {
+        name: s.display_name,
+        age: s.age,
+        gender: s.gender,
+        bio: s.bio,
+        hue: s.hue,
+        photo: null,
+        sample: true,
+        online: timing.online,
+      };
+    }
   } else {
-    return null;
+    // Live Firebase member or same-device account
+    const p = getProfile(conv.peerId);
+    peer = {
+      name: p?.displayName ?? "Member",
+      age: p?.age ?? 0,
+      gender: p?.gender ?? "",
+      bio: p?.bio ?? "",
+      hue: 200,
+      photo: p?.photoData ?? p?.photos?.[0] ?? null,
+      sample: false,
+      online: true,
+    };
   }
 
   const wallet = getWallet();
@@ -505,9 +661,13 @@ export async function getChat(args: { data: { conversationId: string } }) {
     messages,
     wallet: {
       credits: wallet.credits,
-      free_texts: wallet.freeTexts,
+      free_texts: freeSendsLeft(conv.id),
       has_plan: wallet.hasPlan,
       earnings: wallet.earnings,
+      free_sends_left: freeSendsLeft(conv.id),
+      free_reads_per_chat: ECONOMY.freeReadsPerChat,
+      free_sends_per_chat: ECONOMY.freeSendsPerChat,
+      free_chats_max: ECONOMY.freeChatsOnSignup,
     },
     costs: {
       unlockMessage: ECONOMY.unlockMessageCredits,
@@ -522,9 +682,10 @@ export async function getChat(args: { data: { conversationId: string } }) {
 }
 
 export async function sendMessage(args: { data: { conversationId: string; body: string } }) {
-  const spend = spendForSendText();
+  const spend = spendForSendText(args.data.conversationId);
   if (!spend.ok) return { ok: false as const, reason: "paywall" as const };
 
+  // Always show the user's own message immediately (feels good)
   appendMessage(args.data.conversationId, {
     sender: "me",
     body: args.data.body.trim(),
@@ -533,21 +694,67 @@ export async function sendMessage(args: { data: { conversationId: string; body: 
   });
 
   const conv = getConversation(args.data.conversationId);
-  if (conv?.peerKind === "sample") {
-    const reply = REPLIES[Math.floor(Math.random() * REPLIES.length)]!;
-    appendMessage(args.data.conversationId, {
-      sender: "peer",
-      body: reply,
-      kind: "text",
-      locked: true,
-    });
-  }
+  const willReply = conv?.peerKind === "sample";
+
   // Woman accounts earn when activity happens on their thread (notifications → credits)
   const me = getProfile();
   if (me?.gender === "woman" && !me.isAdmin) {
     addEarnings(ECONOMY.girlEarnOnMessageUnlock);
   }
+  // Peer sample reply is delivered later by the client (typing delay)
+  return {
+    ok: true as const,
+    willReply: Boolean(willReply),
+    freeSendsLeft: spend.freeLeft,
+  };
+}
+
+/** Deliver a delayed sample-peer reply (call after typing indicator). */
+export async function deliverSampleReply(args: { data: { conversationId: string } }) {
+  const conv = getConversation(args.data.conversationId);
+  if (!conv || conv.peerKind !== "sample") {
+    return { ok: false as const };
+  }
+  // First freeReadsPerChat peer messages are free to read
+  const peerLocked = !nextPeerReplyShouldBeFree(args.data.conversationId);
+  // Avoid repeating a reply already used in this conversation
+  const used = new Set(
+    getMessages(args.data.conversationId)
+      .filter((m) => m.sender === "peer")
+      .map((m) => m.body),
+  );
+  const unused = REPLIES.filter((r) => !used.has(r));
+  const pool = unused.length > 0 ? unused : REPLIES;
+  const reply = pool[Math.floor(Math.random() * pool.length)]!;
+  appendMessage(args.data.conversationId, {
+    sender: "peer",
+    body: reply,
+    kind: "text",
+    locked: peerLocked,
+  });
   return { ok: true as const };
+}
+
+/** Timing hints for sample peers: online = quick, offline = minutes. */
+export function getSampleReplyTiming(peerId: string): {
+  online: boolean;
+  waitBeforeTypingMs: number;
+  typingMs: number;
+} {
+  const online = isSampleOnline(peerId);
+  if (online) {
+    return {
+      online: true,
+      waitBeforeTypingMs: 400 + Math.floor(Math.random() * 1600), // 0.4–2s
+      typingMs: 1200 + Math.floor(Math.random() * 2800), // 1.2–4s
+    };
+  }
+  // Offline: reply after a few minutes, typing duration still varies
+  return {
+    online: false,
+    waitBeforeTypingMs: (2 * 60 + Math.floor(Math.random() * 3 * 60)) * 1000, // 2–5 min
+    typingMs: 2000 + Math.floor(Math.random() * 5000), // 2–7s typing once they "start"
+  };
 }
 
 export async function sendGift(args: { data: { conversationId: string; giftId: string } }) {
@@ -588,37 +795,102 @@ export async function unlockChatMessage(args: { data: { messageId: number } }) {
  * Creator share of spend is tracked as local "earnings" (for demo; real cash-out needs payout system).
  */
 export async function startVideo(args: { data: { conversationId: string } }) {
-  void args;
   const wallet = getWallet();
-  if (!wallet.hasPlan) {
-    return { ok: false as const, reason: "need_plan" as const, credits: wallet.credits };
+  const me = getProfile();
+  void getConversation(args.data.conversationId);
+  // Until real WebRTC connects both sides, call is "practice" (no per-minute fee).
+  // Still charge a small connect fee so placing a call has weight.
+  const practice = true; // TODO: false when peer WebRTC is connected
+
+  if (me?.isAdmin) {
+    return {
+      ok: true as const,
+      freeSeconds: ECONOMY.videoFreeSeconds,
+      creditsPerMinute: ECONOMY.videoCreditsPerMinute,
+      creatorShareCredits: 0,
+      creditsCharged: 0,
+      practice: true as const,
+      ringSeconds: 8,
+      message: "Admin — free call.",
+    };
   }
-  // Charge first billable minute (after free 10s the app will call tickVideoMinute)
-  const cost = ECONOMY.videoCreditsPerMinute;
-  const spent = spendCredits(cost);
+
+  const connectFee = ECONOMY.videoCallStartCredits;
+  if (wallet.credits < connectFee && !wallet.hasPlan) {
+    // allow if has credits even without plan for connect fee
+  }
+  if (wallet.credits < connectFee) {
+    return {
+      ok: false as const,
+      reason: "paywall" as const,
+      credits: wallet.credits,
+      message: `Need ${connectFee} credits to place a video call.`,
+    };
+  }
+  const spent = spendCredits(connectFee);
   if (!spent.ok) {
     return { ok: false as const, reason: "paywall" as const, credits: spent.wallet.credits };
   }
-  const share = Math.floor(cost * ECONOMY.videoCreatorShare);
-  // In a full multi-user system this would credit the peer; for demo we show share on wallet tip
-  const me = getProfile();
-  if (me?.gender === "woman" && !me.isAdmin) {
-    addEarnings(share);
-  }
+
   return {
     ok: true as const,
     freeSeconds: ECONOMY.videoFreeSeconds,
     creditsPerMinute: ECONOMY.videoCreditsPerMinute,
-    creatorShareCredits: share,
+    creatorShareCredits: 0,
+    creditsCharged: connectFee,
+    practice: true as const,
+    ringSeconds: 8,
+    message: `Call placed · ${connectFee} credits. Ringing…`,
   };
 }
 
 export async function tickVideoMinute() {
+  const me = getProfile();
+  if (me?.isAdmin) {
+    return { ok: true as const, creatorShareCredits: 0, creditsCharged: 0 };
+  }
   const cost = ECONOMY.videoCreditsPerMinute;
   const spent = spendCredits(cost);
   if (!spent.ok) return { ok: false as const, reason: "paywall" as const, credits: spent.wallet.credits };
   const share = Math.floor(cost * ECONOMY.videoCreatorShare);
-  return { ok: true as const, creatorShareCredits: share };
+  return { ok: true as const, creatorShareCredits: share, creditsCharged: cost };
+}
+
+/** End video call: post a system summary message into the chat. */
+export async function endVideoCall(args: {
+  data: {
+    conversationId: string;
+    durationSeconds: number;
+    creditsUsed: number;
+    peerName?: string;
+    practice?: boolean;
+  };
+}) {
+  const secs = Math.max(0, Math.floor(args.data.durationSeconds));
+  const mins = Math.floor(secs / 60);
+  const rem = secs % 60;
+  const dur =
+    mins > 0 ? `${mins} min ${rem.toString().padStart(2, "0")} sec` : `${rem} sec`;
+  const credits = Math.max(0, Math.floor(args.data.creditsUsed));
+  const peer = args.data.peerName ? ` with ${args.data.peerName}` : "";
+  const practice = Boolean(args.data.practice);
+  let body: string;
+  if (practice && credits > 0) {
+    body = `📹 No answer${peer} · rang ${dur} · ${credits} credit${credits === 1 ? "" : "s"}`;
+  } else if (practice) {
+    body = `📹 No answer${peer} · rang ${dur}`;
+  } else if (credits > 0) {
+    body = `📹 Video call ended${peer} · ${dur} · ${credits} credit${credits === 1 ? "" : "s"} used`;
+  } else {
+    body = `📹 Video call ended${peer} · ${dur}`;
+  }
+  appendMessage(args.data.conversationId, {
+    sender: "me",
+    body,
+    kind: "system",
+    locked: false,
+  });
+  return { ok: true as const, body };
 }
 
 /** Purchase credits via Google Play Billing (native) or sandbox (web). */
@@ -660,7 +932,7 @@ export async function requestWithdraw() {
   if (!res.ok) return { ok: false as const, message: res.message };
   return {
     ok: true as const,
-    message: `Withdraw request for $${res.request.amountUsd} sent to admin. We will contact ${res.request.phone || res.request.email}.`,
+    message: `Reward request sent to admin (${res.request.amountCredits} points). Payment or credit reward is released only after admin approval — not automatic.`,
     amountUsd: res.request.amountUsd,
     requestId: res.request.id,
   };
@@ -679,17 +951,30 @@ export async function getAdminDashboard() {
     topSpenders: bySpend.slice(0, 10),
     topEarners: byEarn.slice(0, 10),
     withdrawRequests: listWithdrawRequests(),
-    supportMessages: listSupportMessages().filter((m) => !m.fromAdmin),
+    supportMessages: listSupportMessages(),
+    supportThreads: listSupportThreads(),
+    payoutPaypal: getPayoutPaypal(),
   };
 }
 
 export async function adminSetWithdraw(args: {
-  data: { requestId: string; status: "paid" | "rejected" | "pending" };
+  data: {
+    requestId: string;
+    status: "paid" | "rejected" | "pending" | "credits_rewarded";
+  };
 }) {
   const me = getProfile();
-  if (!me?.isAdmin) return { ok: false as const };
-  setWithdrawStatus(args.data.requestId, args.data.status);
-  return { ok: true as const };
+  if (!me?.isAdmin) return { ok: false as const, message: "Admin only" };
+  if (args.data.status === "pending") {
+    setWithdrawStatus(args.data.requestId, "pending");
+    return { ok: true as const };
+  }
+  if (args.data.status === "paid" || args.data.status === "rejected" || args.data.status === "credits_rewarded") {
+    const res = adminFulfillWithdraw(args.data.requestId, args.data.status);
+    if (!res.ok) return { ok: false as const, message: res.message };
+    return { ok: true as const };
+  }
+  return { ok: false as const, message: "Unknown status" };
 }
 
 export async function contactSupport(args: { data: { body: string } }) {
@@ -698,10 +983,59 @@ export async function contactSupport(args: { data: { body: string } }) {
   return { ok: true as const, message: "Message sent to support / admin." };
 }
 
-export async function adminReplySupport(args: { data: { body: string } }) {
+export async function adminReplySupport(args: {
+  data: {
+    body: string;
+    toUserId?: string;
+    toEmail?: string;
+    toName?: string;
+    toPhone?: string;
+  };
+}) {
   const me = getProfile();
-  if (!me?.isAdmin) return { ok: false as const };
-  sendSupportMessage(args.data.body.trim());
-  return { ok: true as const };
+  if (!me?.isAdmin) return { ok: false as const, message: "Admin only" };
+  if (!args.data.body.trim()) return { ok: false as const, message: "Write a reply" };
+  adminReplyToUser({
+    body: args.data.body.trim(),
+    toUserId: args.data.toUserId,
+    toEmail: args.data.toEmail,
+    toName: args.data.toName,
+    toPhone: args.data.toPhone,
+  });
+  return { ok: true as const, message: "Reply saved" };
 }
 
+export async function adminGrantCredits(args: { data: { email: string; amount: number } }) {
+  const me = getProfile();
+  if (!me?.isAdmin) return { ok: false as const, message: "Admin only" };
+  const res = adminGrantCreditsToEmail(args.data.email, args.data.amount);
+  if (!res.ok) return { ok: false as const, message: res.message };
+  const n = args.data.amount;
+  const verb = n > 0 ? "Added" : "Removed";
+  return {
+    ok: true as const,
+    message: `${verb} ${Math.abs(n)} credits. New balance: ${res.credits}`,
+    credits: res.credits,
+  };
+}
+
+export async function adminSetPayoutPaypal(args: { data: { email: string } }) {
+  const me = getProfile();
+  if (!me?.isAdmin) return { ok: false as const, message: "Admin only" };
+  setPayoutPaypal(args.data.email);
+  return { ok: true as const, email: args.data.email.trim(), message: "Payout email saved" };
+}
+
+export async function adminCloseSupportTicket(args: { data: { email: string } }) {
+  const me = getProfile();
+  if (!me?.isAdmin) return { ok: false as const, message: "Admin only" };
+  setSupportTicketStatus(args.data.email, "closed");
+  return { ok: true as const, message: "Ticket closed" };
+}
+
+export async function adminReopenSupportTicket(args: { data: { email: string } }) {
+  const me = getProfile();
+  if (!me?.isAdmin) return { ok: false as const, message: "Admin only" };
+  setSupportTicketStatus(args.data.email, "open");
+  return { ok: true as const, message: "Ticket reopened" };
+}

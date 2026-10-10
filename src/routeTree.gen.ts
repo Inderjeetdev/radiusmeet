@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as ChatsRouteImport } from './routes/chats'
 import { Route as DiscoverRouteImport } from './routes/discover'
 import { Route as LoginRouteImport } from './routes/login'
@@ -20,11 +21,15 @@ import { Route as CallIdRouteImport } from './routes/call.$id'
 import { Route as ChatsIndexRouteImport } from './routes/chats.index'
 import { Route as ChatsIdRouteImport } from './routes/chats.$id'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
-import { Route as AdminRouteImport } from './routes/admin'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatsRoute = ChatsRouteImport.update({
@@ -72,11 +77,6 @@ const ChatsIdRoute = ChatsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ChatsRoute,
 } as any)
-const AdminRoute = AdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -85,11 +85,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/chats': typeof ChatsRouteWithChildren
   '/discover': typeof DiscoverRoute
   '/login': typeof LoginRoute
   '/me': typeof MeRoute
-  '/admin': typeof AdminRoute
   '/setup': typeof SetupRoute
   '/wallet': typeof WalletRoute
   '/call/$id': typeof CallIdRoute
@@ -99,10 +99,10 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/discover': typeof DiscoverRoute
   '/login': typeof LoginRoute
   '/me': typeof MeRoute
-  '/admin': typeof AdminRoute
   '/setup': typeof SetupRoute
   '/wallet': typeof WalletRoute
   '/call/$id': typeof CallIdRoute
@@ -113,11 +113,11 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRoute
   '/chats': typeof ChatsRouteWithChildren
   '/discover': typeof DiscoverRoute
   '/login': typeof LoginRoute
   '/me': typeof MeRoute
-  '/admin': typeof AdminRoute
   '/setup': typeof SetupRoute
   '/wallet': typeof WalletRoute
   '/call/$id': typeof CallIdRoute
@@ -129,11 +129,11 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/admin'
     | '/chats'
     | '/discover'
     | '/login'
     | '/me'
-  | '/admin'
     | '/setup'
     | '/wallet'
     | '/call/$id'
@@ -143,10 +143,10 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/admin'
     | '/discover'
     | '/login'
     | '/me'
-  | '/admin'
     | '/setup'
     | '/wallet'
     | '/call/$id'
@@ -156,11 +156,11 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/admin'
     | '/chats'
     | '/discover'
     | '/login'
     | '/me'
-  | '/admin'
     | '/setup'
     | '/wallet'
     | '/call/$id'
@@ -171,11 +171,11 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRoute
   ChatsRoute: typeof ChatsRouteWithChildren
   DiscoverRoute: typeof DiscoverRoute
   LoginRoute: typeof LoginRoute
   MeRoute: typeof MeRoute
-  AdminRoute: typeof AdminRoute
   SetupRoute: typeof SetupRoute
   WalletRoute: typeof WalletRoute
   CallIdRoute: typeof CallIdRoute
@@ -189,6 +189,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chats': {
@@ -278,11 +285,11 @@ const ChatsRouteWithChildren = ChatsRoute._addFileChildren(ChatsRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRoute,
   ChatsRoute: ChatsRouteWithChildren,
   DiscoverRoute: DiscoverRoute,
   LoginRoute: LoginRoute,
   MeRoute: MeRoute,
-  AdminRoute: AdminRoute,
   SetupRoute: SetupRoute,
   WalletRoute: WalletRoute,
   CallIdRoute: CallIdRoute,

@@ -17,9 +17,19 @@ function Discover() {
   const navigate = useNavigate();
   const q = useQuery({ queryKey: ["discover"], queryFn: () => listDiscover() });
   const [i, setI] = useState(0);
+  const [limitMsg, setLimitMsg] = useState<string | null>(null);
   const open = useMutation({
     mutationFn: (p: { peerId: string; peerKind: "sample" | "user" }) => openChat({ data: p }),
-    onSuccess: (res) => navigate({ to: "/chats/$id", params: { id: res.conversationId } }),
+    onSuccess: (res) => {
+      if (res.ok === false) {
+        setLimitMsg(
+          "Free limit: you can chat with up to 10 people. Buy Starter for unlimited chats.",
+        );
+        return;
+      }
+      setLimitMsg(null);
+      void navigate({ to: "/chats/$id", params: { id: res.conversationId } });
+    },
   });
   const people = q.data?.people ?? [];
   const person = people[i];
@@ -35,6 +45,14 @@ function Discover() {
           ? `Around ${area} · within ${radiusKm} km`
           : "Set your area in setup to find people nearby."}
       </p>
+      {limitMsg ? (
+        <p className="mt-2 rounded-2xl border border-border bg-surface px-3 py-2 text-xs text-gold">
+          {limitMsg}{" "}
+          <button type="button" className="underline" onClick={() => navigate({ to: "/wallet" })}>
+            Open wallet
+          </button>
+        </p>
+      ) : null}
       {!q.isPending && (onlineCount > 0 || offlineCount > 0) ? (
         <p className="mt-1 text-xs text-muted">
           {onlineCount > 0 ? (

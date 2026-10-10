@@ -3,9 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { AppGate } from "@/components/app-gate";
 import { Portrait } from "@/components/portrait";
-import { GIFT_PRESETS } from "@/lib/economy";
+import { ECONOMY, GIFT_PRESETS } from "@/lib/economy";
 import {
+  deliverSampleReply,
   getChat,
+  getSampleReplyTiming,
   sendGift,
   sendMessage,
   startVideo,
@@ -26,6 +28,7 @@ function Thread() {
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const [showGifts, setShowGifts] = useState(false);
+  const [isPeerTyping, setIsPeerTyping] = useState(false);
   const q = useQuery({
     queryKey: ["chat", id],
     queryFn: () => getChat({ data: { conversationId: id } }),
@@ -45,7 +48,21 @@ function Thread() {
         return;
       }
       setText("");
-      await refresh();
+      await refresh(); // show user's message immediately
+
+      // Realistic typing delay for sample peers (online = fast, offline = few minutes)
+      if (res.willReply) {
+        const peerId = q.data?.peerId ?? "";
+        const timing = peerId
+          ? getSampleReplyTiming(peerId)
+          : { waitBeforeTypingMs: 1000, typingMs: 2000, online: false };
+        await new Promise((r) => setTimeout(r, timing.waitBeforeTypingMs));
+        setIsPeerTyping(true);
+        await new Promise((r) => setTimeout(r, timing.typingMs));
+        await deliverSampleReply({ data: { conversationId: id } });
+        setIsPeerTyping(false);
+        await refresh();
+      }
     },
   });
 
@@ -103,7 +120,11 @@ function Thread() {
             {data.peer.name}, {data.peer.age}
           </p>
           <p className="text-xs text-muted">
-            {data.peer.sample ? "Nearby · scripted replies" : "Member"} · {data.wallet.credits} credits
+            {data.peer.sample
+              ? data.peer.online
+                ? "Online · nearby"
+                : "Offline · may reply in a few minutes"
+              : "Member"}
           </p>
         </div>
         <button
@@ -115,18 +136,29 @@ function Thread() {
         </button>
       </div>
 
-      {!hasPlan ? (
+      {hasPlan ? null : (data.wallet.free_sends_left ?? data.wallet.free_texts) <= 0 ? (
         <p className="mt-3 rounded-2xl border border-border bg-surface px-3 py-2 text-xs text-muted">
-          Free users only see that someone messaged them. Buy{" "}
+          Free messages in this chat used up (5 sends). Buy{" "}
           <Link to="/wallet" className="text-gold underline">
             Starter
           </Link>{" "}
-          to unlock reading, gifts, photos, and video.
+          or use credits to keep chatting.
+        </p>
+      ) : !hasPlan ? (
+        <p className="mt-3 rounded-2xl border border-border bg-surface/60 px-3 py-2 text-xs text-muted">
+          {(data.wallet.free_sends_left ?? data.wallet.free_texts)} free send
+          {(data.wallet.free_sends_left ?? data.wallet.free_texts) === 1 ? "" : "s"} left in this chat · first{" "}
+          {data.wallet.free_reads_per_chat ?? 5} replies free to read
         </p>
       ) : null}
 
       <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto">
-        {data.messages.map((m) => (
+        {data.messages.map((m) =>
+          m.kind === "system" ? (
+            <div key={m.id} className="mx-auto max-w-[95%] rounded-2xl border border-border bg-surface/80 px-3 py-2 text-center text-xs text-muted">
+              {m.body}
+            </div>
+          ) : (
           <div
             key={m.id}
             className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
@@ -157,7 +189,18 @@ function Thread() {
               <p>{m.body}</p>
             )}
           </div>
-        ))}
+          )
+        )}
+        {isPeerTyping ? (
+          <div className="max-w-[85%] rounded-2xl bg-surface px-4 py-3 text-sm text-muted">
+            <span className="inline-flex gap-1">
+              <span className="animate-bounce" style={{ animationDelay: "0ms" }}>.</span>
+              <span className="animate-bounce" style={{ animationDelay: "150ms" }}>.</span>
+              <span className="animate-bounce" style={{ animationDelay: "300ms" }}>.</span>
+            </span>
+            <span className="ml-2 text-xs">typing…</span>
+          </div>
+        ) : null}
       </div>
 
       {showGifts ? (
@@ -198,9 +241,14 @@ function Thread() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={
-            data.wallet.free_texts > 0
-              ? `Message (${data.wallet.free_texts} free left)`
-              : `Message (${costs.sendMessage} credit)`
+            hasPlan
+              ? "Message"
+              : (data.wallet.free_sends_left ?? data.wallet.free_texts) > 0 &&
+                  (data.wallet.free_sends_left ?? 0) < 100
+                ? `Message (${data.wallet.free_sends_left ?? data.wallet.free_texts} free left in this chat)`
+                : (data.wallet.free_sends_left ?? data.wallet.free_texts) > 0
+                  ? "Message"
+                  : `Message (${costs.sendMessage} credit)`
           }
           className="min-w-0 flex-1 rounded-full border border-border bg-surface px-4 py-2 text-sm"
         />
@@ -213,8 +261,8 @@ function Thread() {
         </button>
       </form>
       <p className="pb-2 text-[10px] text-muted">
-        Video: {costs.videoFreeSeconds}s free, then {costs.videoPerMinute} credits/min. Peer can earn a share when
-        you pay for video.
+        Video: {ECONOMY.videoCallStartCredits} credits to place a call · per-minute rates when both sides are live.
+        See Wallet for terms.
       </p>
     </div>
   );

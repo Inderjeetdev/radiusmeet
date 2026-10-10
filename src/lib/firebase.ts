@@ -36,12 +36,12 @@ import {
 
 /** Paste your Firebase web config here after download. */
 export const FIREBASE_CONFIG = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY ?? "PASTE_API_KEY",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ?? "PASTE_PROJECT_ID.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID ?? "PASTE_PROJECT_ID",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ?? "PASTE_PROJECT_ID.appspot.com",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? "PASTE_SENDER_ID",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID ?? "PASTE_APP_ID",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY ?? "AIzaSyC23YnjbWUvxQ2D2VT7NEfT83gdDschefY",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ?? "radiusmeet.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID ?? "radiusmeet",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ?? "radiusmeet.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? "501170180915",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID ?? "1:501170180915:web:d12f5d404072cbb165a446",
 };
 
 export function isFirebaseConfigured(): boolean {

@@ -42,6 +42,8 @@ export type LocalWallet = {
   creditsSpent: number;
   /** Pack purchase total credits bought */
   creditsPurchased: number;
+  /** One-time woman welcome pack already applied */
+  womanBonusGranted?: boolean;
 };
 
 export type EarningsEntry = { amount: number; at: number; reason: string };
@@ -54,8 +56,10 @@ export type WithdrawRequest = {
   phone: string;
   amountCredits: number;
   amountUsd: number;
-  status: "pending" | "paid" | "rejected";
+  status: "pending" | "paid" | "rejected" | "credits_rewarded";
   createdAt: number;
+  /** How admin fulfilled: cash outside app, or in-app credits */
+  fulfillNote?: string;
 };
 
 export type SupportMessage = {
@@ -106,6 +110,8 @@ type Store = {
   earningsLedger: Record<string, EarningsEntry[]>;
   withdrawRequests: WithdrawRequest[];
   supportMessages: SupportMessage[];
+  /** email -> open|closed */
+  supportTickets: Record<string, { status: "open" | "closed"; closedAt?: number }>;
   conversations: LocalConversation[];
   messages: LocalMessage[];
   messageSeq: number;
@@ -121,6 +127,7 @@ function emptyWallet(): LocalWallet {
     earnings: 0,
     creditsSpent: 0,
     creditsPurchased: 0,
+    womanBonusGranted: false,
   };
 }
 
@@ -133,6 +140,7 @@ function emptyStore(): Store {
     earningsLedger: {},
     withdrawRequests: [],
     supportMessages: [],
+    supportTickets: {},
     conversations: [],
     messages: [],
     messageSeq: 1,
@@ -216,6 +224,13 @@ export function getProfile(userId?: string): LocalProfile | null {
   return s.profiles[id] ?? null;
 }
 
+/** Other completed profiles on this device (for same-browser multi-account testing). */
+export function listOtherLocalProfiles(): LocalProfile[] {
+  const s = read();
+  const me = s.sessionUserId;
+  return Object.values(s.profiles).filter((p) => p.userId !== me && p.displayName);
+}
+
 export function saveLocalProfile(
   data: Omit<LocalProfile, "userId"> & { userId?: string },
 ): LocalProfile {
@@ -249,6 +264,10 @@ export function saveLocalProfile(
     w.hasPlan = true;
     w.credits = Math.max(w.credits, 99999);
     w.freeTexts = 9999;
+  } else if (profile.gender === "woman" && !w.womanBonusGranted) {
+    // Creator-side welcome pack (common freemium pattern)
+    w.credits += ECONOMY.womanWelcomeCredits;
+    w.womanBonusGranted = true;
   }
   s.wallets[userId] = w;
   write(s);
@@ -275,6 +294,56 @@ export function addCredits(packCredits: number) {
   return w;
 }
 
+/** Admin: add credits to any account on this device by email (or current user). */
+export function adminGrantCreditsToEmail(
+  email: string,
+  amount: number,
+): { ok: true; userId: string; credits: number } | { ok: false; message: string } {
+  if (!amount || amount === 0) return { ok: false, message: "Enter a non-zero amount" };
+  const s = read();
+  const e = email.trim().toLowerCase();
+  let userId: string | null = null;
+  for (const p of Object.values(s.profiles)) {
+    if ((p.email || "").toLowerCase() === e) {
+      userId = p.userId;
+      break;
+    }
+  }
+  if (!userId) {
+    for (const a of Object.values(s.accounts)) {
+      if (a.email.toLowerCase() === e) {
+        userId = a.userId;
+        break;
+      }
+    }
+  }
+  if (!userId) return { ok: false, message: "No user with that email on this device" };
+  const w = ensureWallet(s, userId);
+  const next = w.credits + amount;
+  if (next < 0) return { ok: false, message: `Cannot go below 0 (current balance ${w.credits})` };
+  w.credits = next;
+  // Only real pack purchases should raise creditsPurchased.
+  // Admin grant adjusts balance only (Bought column stays purchase history).
+  if (amount > 0) {
+    w.hasPlan = true;
+  }
+  s.wallets[userId] = w;
+  write(s);
+  return { ok: true, userId, credits: w.credits };
+}
+
+const PAYOUT_KEY = "radiusmeet.payout.paypal";
+
+export function getPayoutPaypal(): string {
+  if (typeof localStorage === "undefined") return "";
+  return localStorage.getItem(PAYOUT_KEY) || "";
+}
+
+export function setPayoutPaypal(email: string) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(PAYOUT_KEY, email.trim());
+}
+
 export function spendCredits(
   amount: number,
 ): { ok: true; wallet: LocalWallet } | { ok: false; reason: "paywall"; wallet: LocalWallet } {
@@ -292,28 +361,89 @@ export function spendCredits(
   return { ok: true, wallet: { ...w } };
 }
 
-/** Send text: use free texts first, else 1 credit. Requires nothing for free texts. */
-export function spendForSendText():
-  | { ok: true }
+/** Count my text sends in a conversation. */
+export function countMySends(conversationId: string): number {
+  return read().messages.filter(
+    (m) => m.conversationId === conversationId && m.sender === "me" && (m.kind ?? "text") === "text",
+  ).length;
+}
+
+/** Count peer text messages in a conversation. */
+export function countPeerTexts(conversationId: string): number {
+  return read().messages.filter(
+    (m) => m.conversationId === conversationId && m.sender === "peer" && (m.kind ?? "text") === "text",
+  ).length;
+}
+
+/** How many free sends left in this chat (0 if has plan = unlimited via credits path). */
+export function freeSendsLeft(conversationId: string): number {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return 0;
+  const w = ensureWallet(s, id);
+  if (w.hasPlan || s.profiles[id]?.isAdmin) return 9999;
+  return Math.max(0, ECONOMY.freeSendsPerChat - countMySends(conversationId));
+}
+
+/** Whether the next peer reply should be free to read. */
+export function nextPeerReplyShouldBeFree(conversationId: string): boolean {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return false;
+  const w = ensureWallet(s, id);
+  if (w.hasPlan || s.profiles[id]?.isAdmin) return true;
+  return countPeerTexts(conversationId) < ECONOMY.freeReadsPerChat;
+}
+
+/**
+ * Send text: first freeSendsPerChat messages in this conversation are free,
+ * then 1 credit each. Requires conversationId.
+ */
+export function spendForSendText(conversationId: string):
+  | { ok: true; freeLeft: number }
   | { ok: false; reason: "paywall" } {
   const s = read();
   const id = s.sessionUserId;
   if (!id) return { ok: false, reason: "paywall" };
   const w = ensureWallet(s, id);
-  if (s.profiles[id]?.isAdmin) return { ok: true };
-  if (w.freeTexts > 0) {
-    w.freeTexts -= 1;
+  if (s.profiles[id]?.isAdmin) return { ok: true, freeLeft: 9999 };
+
+  const used = countMySends(conversationId);
+  if (used < ECONOMY.freeSendsPerChat) {
+    // free — no wallet mutation needed (count is derived from messages)
+    return { ok: true, freeLeft: ECONOMY.freeSendsPerChat - used - 1 };
+  }
+  if (w.hasPlan && w.credits >= ECONOMY.sendMessageCredits) {
+    w.credits -= ECONOMY.sendMessageCredits;
+    w.creditsSpent = (w.creditsSpent ?? 0) + ECONOMY.sendMessageCredits;
     s.wallets[id] = w;
     write(s);
-    return { ok: true };
+    return { ok: true, freeLeft: 0 };
   }
+  // Allow spending credits even without plan after free quota
   if (w.credits >= ECONOMY.sendMessageCredits) {
     w.credits -= ECONOMY.sendMessageCredits;
+    w.creditsSpent = (w.creditsSpent ?? 0) + ECONOMY.sendMessageCredits;
     s.wallets[id] = w;
     write(s);
-    return { ok: true };
+    return { ok: true, freeLeft: 0 };
   }
   return { ok: false, reason: "paywall" };
+}
+
+/** Can this user open a new chat? (max freeChatsOnSignup without a plan) */
+export function canOpenNewChat():
+  | { ok: true }
+  | { ok: false; reason: "chat_limit" } {
+  const s = read();
+  const id = s.sessionUserId;
+  if (!id) return { ok: false, reason: "chat_limit" };
+  const w = ensureWallet(s, id);
+  if (w.hasPlan || s.profiles[id]?.isAdmin) return { ok: true };
+  if (s.conversations.length >= ECONOMY.freeChatsOnSignup) {
+    return { ok: false, reason: "chat_limit" };
+  }
+  return { ok: true };
 }
 
 export function addEarnings(amount: number, reason = "activity") {
@@ -346,17 +476,17 @@ export function createWithdrawRequest():
   if (!id) return { ok: false, message: "Not signed in" };
   const profile = s.profiles[id];
   if (!profile || profile.gender !== "woman") {
-    return { ok: false, message: "Withdrawals are for woman accounts." };
+    return { ok: false, message: "Reward requests are for woman accounts." };
   }
   const eligible = getEligibleEarnings(id);
   if (eligible < ECONOMY.withdrawCreditsRequired) {
     return {
       ok: false,
-      message: `Need ${ECONOMY.withdrawCreditsRequired} credits earned in the last 6 months (you have ${eligible}).`,
+      message: `Need ${ECONOMY.withdrawCreditsRequired} points (you have ${eligible}). Keep chatting to earn more.`,
     };
   }
   const pending = s.withdrawRequests.find((r) => r.userId === id && r.status === "pending");
-  if (pending) return { ok: false, message: "You already have a pending withdraw request." };
+  if (pending) return { ok: false, message: "You already have a pending reward request. Admin will review it." };
 
   const req: WithdrawRequest = {
     id: uid(),
@@ -370,9 +500,41 @@ export function createWithdrawRequest():
     createdAt: Date.now(),
   };
   s.withdrawRequests.unshift(req);
-  // Deduct from eligible by recording negative? Keep simple: mark paid only by admin.
   write(s);
   return { ok: true, request: req };
+}
+
+/** Admin: mark request paid (cash outside app) or grant credit reward. */
+export function adminFulfillWithdraw(
+  requestId: string,
+  mode: "paid" | "credits_rewarded" | "rejected",
+): { ok: true } | { ok: false; message: string } {
+  const s = read();
+  const r = s.withdrawRequests.find((x) => x.id === requestId);
+  if (!r) return { ok: false, message: "Request not found" };
+  if (r.status !== "pending") return { ok: false, message: "Already handled" };
+
+  if (mode === "rejected") {
+    r.status = "rejected";
+    r.fulfillNote = "Rejected by admin";
+    write(s);
+    return { ok: true };
+  }
+  if (mode === "paid") {
+    r.status = "paid";
+    r.fulfillNote = `Cash ~$${r.amountUsd} paid outside app`;
+    write(s);
+    return { ok: true };
+  }
+  // credits reward to woman wallet
+  const w = ensureWallet(s, r.userId);
+  const bonus = ECONOMY.withdrawCreditReward;
+  w.credits += bonus;
+  r.status = "credits_rewarded";
+  r.fulfillNote = `Granted ${bonus} credits in-app`;
+  s.wallets[r.userId] = w;
+  write(s);
+  return { ok: true };
 }
 
 export function listWithdrawRequests(): WithdrawRequest[] {
@@ -408,9 +570,94 @@ export function sendSupportMessage(body: string): SupportMessage {
   return msg;
 }
 
+/** Admin reply shown in support thread (fromAdmin = true). */
+export function adminReplyToUser(opts: {
+  body: string;
+  toUserId?: string;
+  toEmail?: string;
+  toName?: string;
+  toPhone?: string;
+}): SupportMessage {
+  const s = read();
+  const adminId = s.sessionUserId;
+  if (!adminId) throw new Error("Not signed in");
+  const admin = s.profiles[adminId];
+  const msg: SupportMessage = {
+    id: uid(),
+    userId: opts.toUserId || adminId,
+    displayName: opts.toName || "User",
+    email: opts.toEmail || "",
+    phone: opts.toPhone || "",
+    body: opts.body.trim(),
+    fromAdmin: true,
+    createdAt: Date.now(),
+    readByAdmin: true,
+  };
+  s.supportMessages.push(msg);
+  write(s);
+  return msg;
+}
+
 export function listSupportMessages(): SupportMessage[] {
   return [...read().supportMessages].sort((a, b) => b.createdAt - a.createdAt);
 }
+
+export function getSupportTicketStatus(email: string): "open" | "closed" {
+  const key = email.trim().toLowerCase();
+  return read().supportTickets?.[key]?.status ?? "open";
+}
+
+export function setSupportTicketStatus(
+  email: string,
+  status: "open" | "closed",
+): void {
+  const s = read();
+  if (!s.supportTickets) s.supportTickets = {};
+  const key = email.trim().toLowerCase();
+  s.supportTickets[key] = {
+    status,
+    closedAt: status === "closed" ? Date.now() : undefined,
+  };
+  write(s);
+}
+
+export function listSupportThreads(): Array<{
+  email: string;
+  userId: string;
+  displayName: string;
+  phone: string;
+  status: "open" | "closed";
+  lastAt: number;
+  preview: string;
+  messages: SupportMessage[];
+}> {
+  const s = read();
+  if (!s.supportTickets) s.supportTickets = {};
+  const byEmail = new Map<string, SupportMessage[]>();
+  for (const m of s.supportMessages) {
+    const key = (m.email || m.userId || "unknown").toLowerCase();
+    if (!byEmail.has(key)) byEmail.set(key, []);
+    byEmail.get(key)!.push(m);
+  }
+  const threads = [];
+  for (const [email, msgs] of byEmail) {
+    const sorted = [...msgs].sort((a, b) => a.createdAt - b.createdAt);
+    const last = sorted[sorted.length - 1]!;
+    const firstUser = sorted.find((x) => !x.fromAdmin) ?? last;
+    threads.push({
+      email: firstUser.email || email,
+      userId: firstUser.userId,
+      displayName: firstUser.displayName,
+      phone: firstUser.phone,
+      status: (s.supportTickets[email]?.status ?? "open") as "open" | "closed",
+      lastAt: last.createdAt,
+      preview: last.body,
+      messages: sorted,
+    });
+  }
+  return threads.sort((a, b) => b.lastAt - a.lastAt);
+}
+
 
 export function markSupportReadByAdmin() {
   const s = read();
@@ -459,6 +706,9 @@ export function openLocalChat(peerId: string, peerKind: "sample" | "user"): stri
   if (!id) throw new Error("Not signed in");
   const existing = s.conversations.find((c) => c.peerId === peerId && c.peerKind === peerKind);
   if (existing) return existing.id;
+  // New conversation — enforce free chat limit
+  const gate = canOpenNewChat();
+  if (!gate.ok) throw new Error("CHAT_LIMIT");
   const convId = uid();
   s.conversations.push({
     id: convId,
@@ -507,7 +757,7 @@ export function appendMessage(
   };
   s.messages.push(full);
   conv.lastBody =
-    full.kind === "gift" ? "🎁 Gift" : full.kind === "photo" ? "📷 Photo" : full.body;
+    full.kind === "gift" ? "🎁 Gift" : full.kind === "photo" ? "📷 Photo" : full.kind === "system" ? full.body : full.body;
   conv.lastAt = now;
   write(s);
   return full;
